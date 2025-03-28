@@ -1,0 +1,357 @@
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { CalendarHeader } from './CalendarHeader';
+import { EmployeeSidebar } from './EmployeeSidebar';
+import { CalendarGrid } from './CalendarGrid';
+import { ReservationModal } from '../../features/calendar/ReservationModal';
+import { CalendarFilters } from '../../features/calendar/CalendarFilters';
+import { getDaysInRange } from '../../shared/lib/dateUtils';
+import { SIDEBAR_WIDTH, CELL_SIZE } from '../../shared/lib/constants';
+import { CalendarFilter, Employee, TimeSlot } from '../../shared/lib/types';
+import { generateEmployees, generateTimeSlots } from '../../shared/lib/mockDataGenerator';
+import { CustomScrollbar, CustomScrollbarRef } from '../../shared/ui/CustomScrollbar';
+import { v4 as uuidv4 } from 'uuid';
+
+// Генерируем тестовые данные
+const mockEmployees = generateEmployees(100);
+const mockTimeSlots = generateTimeSlots(
+  mockEmployees,
+  new Date('2024-03-01'),
+  new Date('2024-03-31'),
+  0.3
+);
+
+export const CalendarWidget = () => {
+  // Состояние для фильтров
+  const [filters, setFilters] = useState<CalendarFilter>({
+    startDate: new Date('2024-03-01'),
+    endDate: new Date('2024-03-31'),
+    employeeTypes: [],
+    activityTypes: [],
+    projectName: '',
+    employeeNames: []
+  });
+
+  // Состояние для отслеживания выделения ячеек
+  const [selectedCells, setSelectedCells] = useState<{
+    employeeId: string;
+    dateIndexes: number[];
+  } | null>(null);
+  const [isSelecting, setIsSelecting] = useState(false);
+  const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null);
+
+  // Состояние для модального окна
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [reservationData, setReservationData] = useState<{
+    startDate: Date | null;
+    endDate: Date | null;
+    employeeId: string | null;
+  }>({
+    startDate: null,
+    endDate: null,
+    employeeId: null
+  });
+
+  // Состояние для хранения временных отрезков
+  const [timeSlots, setTimeSlots] = useState<TimeSlot[]>(mockTimeSlots);
+
+  // Расчет списка дат в заданном диапазоне
+  const dates = useMemo(() => {
+    return getDaysInRange(filters.startDate, filters.endDate);
+  }, [filters.startDate, filters.endDate]);
+
+  // Фильтрованный список сотрудников
+  const filteredEmployees = useMemo(() => {
+    return mockEmployees.filter((employee: Employee) => {
+      // Фильтрация по типу деятельности
+      if (
+        filters.activityTypes.length > 0 &&
+        !employee.activityType.some((type: string) => filters.activityTypes.includes(type))
+      ) {
+        return false;
+      }
+
+      // Фильтрация по имени сотрудника
+      if (
+        filters.employeeNames.length > 0 &&
+        !filters.employeeNames.includes(employee.name)
+      ) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [filters.activityTypes, filters.employeeNames]);
+
+  // Обработчики для выделения ячеек
+  const handleCellMouseDown = (employeeId: string, dateIndex: number) => {
+    setIsSelecting(true);
+    setSelectedEmployee(employeeId);
+    setSelectedCells({
+      employeeId,
+      dateIndexes: [dateIndex]
+    });
+  };
+
+  const handleCellMouseUp = () => {
+    setIsSelecting(false);
+
+    // Если выделены ячейки, открываем модальное окно
+    if (selectedCells && selectedCells.dateIndexes.length > 0) {
+      const dateIndexes = [...selectedCells.dateIndexes].sort((a, b) => a - b);
+      const startDate = dates[dateIndexes[0]];
+      const endDate = dates[dateIndexes[dateIndexes.length - 1]];
+      
+      setReservationData({
+        startDate,
+        endDate,
+        employeeId: selectedCells.employeeId
+      });
+      
+      setIsModalOpen(true);
+    }
+  };
+
+  const handleCellMouseOver = (employeeId: string, dateIndex: number) => {
+    if (isSelecting && employeeId === selectedEmployee) {
+      setSelectedCells(prev => {
+        if (!prev) return null;
+        
+        // Добавляем новую ячейку в выделение, если её там еще нет
+        if (!prev.dateIndexes.includes(dateIndex)) {
+          return {
+            ...prev,
+            dateIndexes: [...prev.dateIndexes, dateIndex]
+          };
+        }
+        
+        return prev;
+      });
+    }
+  };
+
+  // Обработчик изменения фильтров
+  const handleFiltersChange = (newFilters: Partial<CalendarFilter>) => {
+    setFilters(prev => ({
+      ...prev,
+      ...newFilters
+    }));
+  };
+
+  // Обработчик для резервирования временного отрезка
+  const handleReservation = (data: { projectName: string; status: 'active' | 'pending' }) => {
+    if (
+      !reservationData.startDate ||
+      !reservationData.endDate ||
+      !reservationData.employeeId
+    ) {
+      return;
+    }
+
+    const newTimeSlot: TimeSlot = {
+      id: uuidv4(),
+      employeeId: reservationData.employeeId,
+      projectName: data.projectName,
+      startDate: reservationData.startDate.toISOString().split('T')[0],
+      endDate: reservationData.endDate.toISOString().split('T')[0],
+      status: data.status
+    };
+
+    // Проверка на пересечения с существующими отрезками
+    const employeeTimeSlots = timeSlots.filter(
+      slot => slot.employeeId === reservationData.employeeId
+    );
+
+    const newStart = new Date(newTimeSlot.startDate);
+    const newEnd = new Date(newTimeSlot.endDate);
+
+    // Проверяем каждый существующий отрезок на пересечение
+    for (const slot of employeeTimeSlots) {
+      const existingStart = new Date(slot.startDate);
+      const existingEnd = new Date(slot.endDate);
+
+      // Проверка на пересечение дат
+      if (
+        (newStart <= existingEnd && newEnd >= existingStart) ||
+        (existingStart <= newEnd && existingEnd >= newStart)
+      ) {
+        // Если есть пересечение, меняем статус на 'completed'
+        newTimeSlot.status = 'completed';
+        break;
+      }
+    }
+
+    setTimeSlots(prev => [...prev, newTimeSlot]);
+    setIsModalOpen(false);
+    setSelectedCells(null);
+  };
+
+  // Обработчик для открытия модального окна для резервирования
+  const handleOpenReservationModal = () => {
+    if (selectedCells && selectedCells.dateIndexes.length > 0) {
+      const dateIndexes = [...selectedCells.dateIndexes].sort((a, b) => a - b);
+      const startDate = dates[dateIndexes[0]];
+      const endDate = dates[dateIndexes[dateIndexes.length - 1]];
+      
+      setReservationData({
+        startDate,
+        endDate,
+        employeeId: selectedCells.employeeId
+      });
+      
+      setIsModalOpen(true);
+    } else {
+      // Если ничего не выделено, показываем сообщение пользователю
+      alert('Пожалуйста, выделите диапазон дат для резервирования');
+    }
+  };
+
+  // Имя выбранного сотрудника для модального окна
+  const selectedEmployeeName = reservationData.employeeId
+    ? mockEmployees.find((emp: Employee) => emp.id === reservationData.employeeId)?.name || null
+    : null;
+    
+  // Ссылка на DOM-элементы для синхронизации скролла
+  const headerContainerRef = useRef<HTMLDivElement>(null);
+  const sidebarContainerRef = useRef<HTMLDivElement>(null);
+  const scrollbarRef = useRef<CustomScrollbarRef>(null);
+  
+  // Обработчик скролла для синхронизации с шапкой (горизонтальный скролл)
+  const handleScrollbarScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    // Синхронизируем горизонтальный скролл с шапкой
+    if (headerContainerRef.current) {
+      headerContainerRef.current.scrollLeft = e.currentTarget.scrollLeft;
+    }
+    
+    // Синхронизируем вертикальный скролл с sidebar
+    if (sidebarContainerRef.current) {
+      sidebarContainerRef.current.scrollTop = e.currentTarget.scrollTop;
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
+      <CalendarFilters
+        filters={filters}
+        onFiltersChange={handleFiltersChange}
+        onReserve={handleOpenReservationModal}
+      />
+      
+      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+        <div style={{ display: 'flex' }}>
+          <div 
+            style={{ 
+              minWidth: SIDEBAR_WIDTH, 
+              height: CELL_SIZE * 3, 
+              backgroundColor: '#f0f0f0',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'flex-start',
+              paddingLeft: '10px',
+              fontWeight: 'bold',
+              borderBottom: '1px solid #e5e5e5',
+              borderRight: '1px solid #e5e5e5',
+              boxSizing: 'border-box'
+            }}
+          >
+            Сотрудники
+          </div>
+          <div 
+            ref={headerContainerRef}
+            style={{ 
+              overflow: 'hidden',
+              overflowX: 'auto',
+              width: `calc(100% - ${SIDEBAR_WIDTH}px)`,
+              scrollbarWidth: 'none',
+              msOverflowStyle: 'none'
+            }}
+          >
+            <style>
+              {`
+                div[ref="headerContainerRef"]::-webkit-scrollbar {
+                  display: none;
+                }
+              `}
+            </style>
+            <div style={{ 
+              width: CELL_SIZE * dates.length,
+              minWidth: CELL_SIZE * dates.length
+            }}>
+              <CalendarHeader dates={dates} />
+            </div>
+          </div>
+        </div>
+        
+        <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+          <div
+            ref={sidebarContainerRef}
+            style={{ 
+              width: SIDEBAR_WIDTH,
+              minWidth: SIDEBAR_WIDTH,
+              overflow: 'hidden',
+              overflowY: 'auto',
+              scrollbarWidth: 'none',
+              msOverflowStyle: 'none'
+            }}
+          >
+            <style>
+              {`
+                div[ref="sidebarContainerRef"]::-webkit-scrollbar {
+                  display: none;
+                }
+              `}
+            </style>
+            <EmployeeSidebar
+              employees={filteredEmployees}
+              selectedEmployee={selectedEmployee}
+              onSelectEmployee={id => setSelectedEmployee(id)}
+            />
+          </div>
+          
+          <CustomScrollbar
+            ref={scrollbarRef}
+            style={{ 
+              flex: 1,
+              height: '100%',
+              width: `calc(100% - ${SIDEBAR_WIDTH}px)`
+            }}
+            scrollbarSize={10}
+            scrollbarRadius={5}
+            trackColor="#f0f0f0"
+            thumbColor="#c0c0c0"
+            thumbHoverColor="#a0a0a0"
+            onScroll={handleScrollbarScroll}
+          >
+            <div
+              style={{ 
+                width: CELL_SIZE * dates.length,
+                minWidth: CELL_SIZE * dates.length
+              }}
+            >
+              <CalendarGrid
+                employees={filteredEmployees}
+                timeSlots={timeSlots}
+                dates={dates}
+                onCellMouseDown={handleCellMouseDown}
+                onCellMouseUp={handleCellMouseUp}
+                onCellMouseOver={handleCellMouseOver}
+                selectedCells={selectedCells}
+              />
+            </div>
+          </CustomScrollbar>
+        </div>
+      </div>
+      
+      <ReservationModal
+        isOpen={isModalOpen}
+        onClose={() => {
+          setIsModalOpen(false);
+          setSelectedCells(null);
+        }}
+        onSubmit={handleReservation}
+        startDate={reservationData.startDate}
+        endDate={reservationData.endDate}
+        employeeName={selectedEmployeeName}
+      />
+    </div>
+  );
+}; 
