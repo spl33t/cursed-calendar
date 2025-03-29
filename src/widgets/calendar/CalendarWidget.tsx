@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { CalendarHeader } from './CalendarHeader';
 import { EmployeeSidebar } from './EmployeeSidebar';
 import { CalendarGrid } from './CalendarGrid';
@@ -7,24 +8,27 @@ import { CalendarFilters } from '../../features/calendar/CalendarFilters';
 import { getDaysInRange } from '../../shared/lib/dateUtils';
 import { SIDEBAR_WIDTH, CELL_SIZE } from '../../shared/lib/constants';
 import { CalendarFilter, Employee, TimeSlot } from '../../shared/lib/types';
-import { generateEmployees, generateTimeSlots } from '../../shared/lib/mockDataGenerator';
 import { CustomScrollbar, CustomScrollbarRef } from '../../shared/ui/CustomScrollbar';
 import { v4 as uuidv4 } from 'uuid';
 
-// Генерируем тестовые данные
-const mockEmployees = generateEmployees(100);
-const mockTimeSlots = generateTimeSlots(
-  mockEmployees,
-  new Date('2024-03-01'),
-  new Date('2024-03-31'),
-  0.3
-);
+// Определение типа пропсов
+interface CalendarWidgetProps {
+  employees: Employee[];
+  initialTimeSlots?: TimeSlot[];
+  initialStartDate?: Date;
+  initialEndDate?: Date;
+}
 
-export const CalendarWidget = () => {
+export const CalendarWidget = ({
+  employees,
+  initialTimeSlots = [],
+  initialStartDate = new Date('2024-03-01'),
+  initialEndDate = new Date('2024-03-31'),
+}: CalendarWidgetProps) => {
   // Состояние для фильтров
   const [filters, setFilters] = useState<CalendarFilter>({
-    startDate: new Date('2024-03-01'),
-    endDate: new Date('2024-03-31'),
+    startDate: initialStartDate,
+    endDate: initialEndDate,
     employeeTypes: [],
     activityTypes: [],
     projectName: '',
@@ -52,7 +56,7 @@ export const CalendarWidget = () => {
   });
 
   // Состояние для хранения временных отрезков
-  const [timeSlots, setTimeSlots] = useState<TimeSlot[]>(mockTimeSlots);
+  const [timeSlots, setTimeSlots] = useState<TimeSlot[]>(initialTimeSlots);
 
   // Расчет списка дат в заданном диапазоне
   const dates = useMemo(() => {
@@ -61,7 +65,7 @@ export const CalendarWidget = () => {
 
   // Фильтрованный список сотрудников
   const filteredEmployees = useMemo(() => {
-    return mockEmployees.filter((employee: Employee) => {
+    return employees.filter((employee: Employee) => {
       // Фильтрация по типу деятельности
       if (
         filters.activityTypes.length > 0 &&
@@ -80,7 +84,7 @@ export const CalendarWidget = () => {
 
       return true;
     });
-  }, [filters.activityTypes, filters.employeeNames]);
+  }, [filters.activityTypes, filters.employeeNames, employees]);
 
   // Обработчики для выделения ячеек
   const handleCellMouseDown = (employeeId: string, dateIndex: number) => {
@@ -207,26 +211,47 @@ export const CalendarWidget = () => {
 
   // Имя выбранного сотрудника для модального окна
   const selectedEmployeeName = reservationData.employeeId
-    ? mockEmployees.find((emp: Employee) => emp.id === reservationData.employeeId)?.name || null
+    ? employees.find((emp: Employee) => emp.id === reservationData.employeeId)?.name || null
     : null;
     
   // Ссылка на DOM-элементы для синхронизации скролла
   const headerContainerRef = useRef<HTMLDivElement>(null);
   const sidebarContainerRef = useRef<HTMLDivElement>(null);
+  const employeeSidebarParentRef = useRef<HTMLDivElement>(null);
   const scrollbarRef = useRef<CustomScrollbarRef>(null);
   
-  // Обработчик скролла для синхронизации с шапкой (горизонтальный скролл)
-  const handleScrollbarScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    // Синхронизируем горизонтальный скролл с шапкой
-    if (headerContainerRef.current) {
-      headerContainerRef.current.scrollLeft = e.currentTarget.scrollLeft;
-    }
+  // Оптимизированный callback для получения dom-элемента скролла
+  const getScrollElement = useCallback(() => 
+    scrollbarRef.current?.contentRef?.current || null, 
+    [scrollbarRef]
+  );
+
+  // Виртуализация списка сотрудников с оптимизированными настройками
+  const employeeVirtualizer = useVirtualizer({
+    count: filteredEmployees.length,
+    getScrollElement,
+    estimateSize: useCallback(() => CELL_SIZE, []),
+    overscan: 20, // Увеличиваем количество элементов за пределами видимой области
+    getItemKey: useCallback((index: number) => filteredEmployees[index]?.id || index, [filteredEmployees])
+  });
+  
+  // Оптимизированный обработчик скролла с использованием RAF
+  const handleScrollbarScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    // Используем requestAnimationFrame для улучшения производительности
+    const target = e.currentTarget;
     
-    // Синхронизируем вертикальный скролл с sidebar
-    if (sidebarContainerRef.current) {
-      sidebarContainerRef.current.scrollTop = e.currentTarget.scrollTop;
-    }
-  };
+    requestAnimationFrame(() => {
+      // Синхронизируем горизонтальный скролл с шапкой
+      if (headerContainerRef.current) {
+        headerContainerRef.current.scrollLeft = target.scrollLeft;
+      }
+      
+      // Синхронизируем вертикальный скролл с sidebar
+      if (sidebarContainerRef.current) {
+        sidebarContainerRef.current.scrollTop = target.scrollTop;
+      }
+    });
+  }, []);
 
   // Обработчик колесика мыши для шапки - прокручивает основную область
   const handleHeaderWheel = (e: React.WheelEvent<HTMLDivElement>) => {
@@ -403,6 +428,9 @@ export const CalendarWidget = () => {
               employees={filteredEmployees}
               selectedEmployee={selectedEmployee}
               onSelectEmployee={id => setSelectedEmployee(id)}
+              virtualRows={employeeVirtualizer.getVirtualItems()}
+              parentRef={employeeSidebarParentRef}
+              totalHeight={employeeVirtualizer.getTotalSize()}
             />
           </div>
           
@@ -434,6 +462,8 @@ export const CalendarWidget = () => {
                 onCellMouseUp={handleCellMouseUp}
                 onCellMouseOver={handleCellMouseOver}
                 selectedCells={selectedCells}
+                virtualRows={employeeVirtualizer.getVirtualItems()}
+                totalHeight={employeeVirtualizer.getTotalSize()}
               />
             </div>
           </CustomScrollbar>
