@@ -228,8 +228,114 @@ export const CalendarWidget = () => {
     }
   };
 
+  // Обработчик колесика мыши для шапки - прокручивает основную область
+  const handleHeaderWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    
+    // Находим DOM-элемент внутреннего контента скроллбара
+    const scrollbarContent = scrollbarRef.current?.contentRef?.current;
+    
+    if (scrollbarContent) {
+      // Если зажат Shift или горизонтальная прокрутка (deltaX не равен 0),
+      // то используем соответствующую дельту для горизонтальной прокрутки
+      const deltaX = e.shiftKey || Math.abs(e.deltaX) > 0 ? (e.deltaX || e.deltaY) : e.deltaY;
+      scrollbarContent.scrollLeft += deltaX * 2;
+      
+      // Обрабатываем вертикальный скролл, если deltaY != 0 и не зажат Shift
+      // В этом случае используем deltaY напрямую
+      if (!e.shiftKey && Math.abs(e.deltaY) > 0 && Math.abs(e.deltaX) === 0) {
+        scrollbarContent.scrollTop += e.deltaY;
+      }
+    }
+  };
+  
+  // Обработчик колесика мыши для сайдбара - прокручивает основную область
+  const handleSidebarWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    
+    // Находим DOM-элемент внутреннего контента скроллбара
+    const scrollbarContent = scrollbarRef.current?.contentRef?.current;
+    
+    if (scrollbarContent) {
+      // Обрабатываем вертикальный скролл по умолчанию
+      scrollbarContent.scrollTop += e.deltaY;
+      
+      // Обрабатываем горизонтальный скролл, если есть deltaX или зажат Shift
+      if (e.shiftKey || Math.abs(e.deltaX) > 0) {
+        const deltaX = Math.abs(e.deltaX) > 0 ? e.deltaX : e.deltaY;
+        scrollbarContent.scrollLeft += deltaX * 2;
+      }
+    }
+  };
+
+  // Обработчик колесика мыши для всего контейнера календаря
+  const handleCalendarWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    // Предотвращаем дальнейшее распространение события скролла (блокируем скролл браузера)
+    e.stopPropagation();
+    
+    // Получаем доступ к содержимому скроллбара
+    const scrollbarContent = scrollbarRef.current?.contentRef?.current;
+    
+    if (scrollbarContent) {
+      // Проверяем достижение границ скролла только если мы на краю
+      // При скролле вниз и достижении нижней границы
+      if (e.deltaY > 0 && scrollbarContent.scrollTop + scrollbarContent.clientHeight >= scrollbarContent.scrollHeight) {
+        e.preventDefault();
+      } 
+      // При скролле вверх и достижении верхней границы
+      else if (e.deltaY < 0 && scrollbarContent.scrollTop <= 0) {
+        e.preventDefault();
+      }
+      // При скролле вправо и достижении правой границы 
+      else if (e.deltaX > 0 && scrollbarContent.scrollLeft + scrollbarContent.clientWidth >= scrollbarContent.scrollWidth) {
+        e.preventDefault();
+      }
+      // При скролле влево и достижении левой границы
+      else if (e.deltaX < 0 && scrollbarContent.scrollLeft <= 0) {
+        e.preventDefault();
+      }
+      // В остальных случаях не блокируем действие по умолчанию, 
+      // позволяя скроллбару прокручиваться как обычно
+    } else {
+      // Если скроллбар недоступен, предотвращаем действие по умолчанию
+      e.preventDefault();
+    }
+  };
+
+  // Обработчик для блокировки скролла страницы при наведении на календарь
+  const handleMouseEnter = () => {
+    // Получаем текущую ширину страницы
+    const scrollWidth = window.innerWidth - document.documentElement.clientWidth;
+    // Сохраняем текущую позицию скролла
+    const scrollPosition = window.scrollY;
+    
+    // Добавляем отступ справа, равный ширине полосы прокрутки
+    document.body.style.paddingRight = `${scrollWidth}px`;
+    // Блокируем скролл
+    document.body.style.overflow = 'hidden';
+    document.body.dataset.scrollPosition = scrollPosition.toString();
+  };
+  
+  // Обработчик для разблокировки скролла страницы при уходе с календаря
+  const handleMouseLeave = () => {
+    // Удаляем отступ справа
+    document.body.style.paddingRight = '';
+    // Разблокируем скролл
+    document.body.style.overflow = '';
+    
+    // Восстанавливаем позицию скролла
+    if (document.body.dataset.scrollPosition) {
+      window.scrollTo(0, parseInt(document.body.dataset.scrollPosition));
+    }
+  };
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
+    <div 
+      style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}
+      onWheel={handleCalendarWheel}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+    >
       <CalendarFilters
         filters={filters}
         onFiltersChange={handleFiltersChange}
@@ -259,11 +365,11 @@ export const CalendarWidget = () => {
             ref={headerContainerRef}
             style={{ 
               overflow: 'hidden',
-              overflowX: 'auto',
               width: `calc(100% - ${SIDEBAR_WIDTH}px)`,
               scrollbarWidth: 'none',
               msOverflowStyle: 'none'
             }}
+            onWheel={handleHeaderWheel}
           >
             <style>
               {`
@@ -288,18 +394,11 @@ export const CalendarWidget = () => {
               width: SIDEBAR_WIDTH,
               minWidth: SIDEBAR_WIDTH,
               overflow: 'hidden',
-              overflowY: 'auto',
               scrollbarWidth: 'none',
               msOverflowStyle: 'none'
             }}
+            onWheel={handleSidebarWheel}
           >
-            <style>
-              {`
-                div[ref="sidebarContainerRef"]::-webkit-scrollbar {
-                  display: none;
-                }
-              `}
-            </style>
             <EmployeeSidebar
               employees={filteredEmployees}
               selectedEmployee={selectedEmployee}
